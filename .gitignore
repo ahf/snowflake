@@ -17,3 +17,4 @@ proxy/spec/support
 proxy/webext/snowflake.js
 ignore/
 npm-debug.log
+tools/wsnc/wsnc
