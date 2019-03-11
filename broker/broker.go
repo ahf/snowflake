@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -144,6 +145,33 @@ func proxyPolls(ctx *BrokerContext, w http.ResponseWriter, r *http.Request) {
 }
 
 /*
+ * API v1 Proxy WebSocket handler.
+ */
+func v1ProxyHandler(ctx *BrokerContext, w http.ResponseWriter, r *http.Request) {
+	upgrader := websocket.Upgrader{}
+
+	connection, err := upgrader.Upgrade(w, r, nil)
+
+	if err != nil {
+		log.Println("Unable to upgrade to WebSocket connection in proxy handler.")
+		return
+	}
+
+	defer connection.Close()
+
+	for {
+		_, message, err := connection.ReadMessage()
+
+		if err != nil {
+			log.Printf("Unable to read WebSocket message: %s", err)
+			return
+		}
+
+		log.Printf("Message: %s", message)
+	}
+}
+
+/*
 Expects a WebRTC SDP offer in the Request to give to an assigned
 snowflake proxy, which responds with the SDP answer to be sent in
 the HTTP response back to the client.
@@ -245,6 +273,7 @@ func main() {
 	http.Handle("/client", SnowflakeHandler{ctx, clientOffers})
 	http.Handle("/answer", SnowflakeHandler{ctx, proxyAnswers})
 	http.Handle("/debug", SnowflakeHandler{ctx, debugHandler})
+	http.Handle("/api/v1/proxy", SnowflakeHandler{ctx, v1ProxyHandler})
 
 	var err error
 	server := http.Server{
