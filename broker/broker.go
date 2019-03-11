@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"git.torproject.org/pluggable-transports/snowflake.git/common/safelog"
+	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -37,6 +38,9 @@ type BrokerContext struct {
 	idToSnowflake map[string]*Snowflake
 	proxyPolls    chan *ProxyPoll
 	metrics       *Metrics
+
+	// Proxy WebSocket connections.
+	proxy_connections *ProxyConnectionSet
 }
 
 func NewBrokerContext(metricsLogger *log.Logger) *BrokerContext {
@@ -53,10 +57,11 @@ func NewBrokerContext(metricsLogger *log.Logger) *BrokerContext {
 	}
 
 	return &BrokerContext{
-		snowflakes:    snowflakes,
-		idToSnowflake: make(map[string]*Snowflake),
-		proxyPolls:    make(chan *ProxyPoll),
-		metrics:       metrics,
+		snowflakes:        snowflakes,
+		idToSnowflake:     make(map[string]*Snowflake),
+		proxyPolls:        make(chan *ProxyPoll),
+		metrics:           metrics,
+		proxy_connections: NewProxyConnectionSet(),
 	}
 }
 
@@ -157,6 +162,31 @@ func proxyPolls(ctx *BrokerContext, w http.ResponseWriter, r *http.Request) {
 	}
 	log.Println("Passing client offer to snowflake.")
 	w.Write(offer)
+}
+
+/*
+ * API v1 Proxy WebSocket handler.
+ */
+func v1ProxyHandler(ctx *BrokerContext, w http.ResponseWriter, r *http.Request) {
+	upgrader := websocket.Upgrader{}
+
+	connection, err := upgrader.Upgrade(w, r, nil)
+
+	if err != nil {
+		log.Println("Unable to upgrade to WebSocket connection in proxy handler.")
+		return
+	}
+
+	proxy_connection := NewProxyConnection(connection)
+
+	// Register our connection and take care of unregistering it when it's done.
+	ctx.proxy_connections.Add(proxy_connection)
+	defer func() {
+		ctx.proxy_connections.Remove(proxy_connection)
+	}()
+
+	// FIXME(ahf): Should Handle() really take care of calling Close()?
+	proxy_connection.Handle(ctx)
 }
 
 /*
@@ -307,6 +337,7 @@ func main() {
 	http.Handle("/client", SnowflakeHandler{ctx, clientOffers})
 	http.Handle("/answer", SnowflakeHandler{ctx, proxyAnswers})
 	http.Handle("/debug", SnowflakeHandler{ctx, debugHandler})
+	http.Handle("/api/v1/proxy", SnowflakeHandler{ctx, v1ProxyHandler})
 
 	server := http.Server{
 		Addr: addr,
