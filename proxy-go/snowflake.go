@@ -2,8 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
@@ -13,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 	"sync"
@@ -27,6 +34,15 @@ const defaultBrokerURL = "https://snowflake-broker.bamsoftware.com/"
 const defaultRelayURL = "wss://snowflake.bamsoftware.com/"
 const defaultSTUNURL = "stun:stun.l.google.com:19302"
 const pollInterval = 5 * time.Second
+
+// FIXME(ahf): Update when this is in production.
+const defaultBrokerWebSocketURL = "ws://127.0.0.1:8443/api/v1/proxy"
+const defaultStateDirectory = "snowflake-state"
+
+const proxyPlatform = "Snowflake Go Proxy"
+const proxyVersion = "1.0.0"
+
+const reconnectSleepDuration = 5 * time.Second
 
 //amount of time after sending an SDP answer before the proxy assumes the
 //client is not going to connect
@@ -378,12 +394,18 @@ func main() {
 	var stunURL string
 	var logFilename string
 	var rawBrokerURL string
+	var rawWebSocketURL string
+	var useWebSocket bool
+	var stateDir string
 
 	flag.UintVar(&capacity, "capacity", 10, "maximum concurrent clients")
 	flag.StringVar(&rawBrokerURL, "broker", defaultBrokerURL, "broker URL")
 	flag.StringVar(&relayURL, "relay", defaultRelayURL, "websocket relay URL")
 	flag.StringVar(&stunURL, "stun", defaultSTUNURL, "stun URL")
 	flag.StringVar(&logFilename, "log", "", "log filename")
+	flag.BoolVar(&useWebSocket, "use-websocket", false, "use WebSocket connection")
+	flag.StringVar(&rawWebSocketURL, "websocket", defaultBrokerWebSocketURL, "websocket broker URL")
+	flag.StringVar(&stateDir, "state-dir", defaultStateDirectory, "state directory")
 	flag.Parse()
 
 	var logOutput io.Writer = os.Stderr
@@ -400,30 +422,113 @@ func main() {
 	log.SetOutput(&safelog.LogScrubber{Output: logOutput})
 
 	log.Println("starting")
-
 	var err error
-	brokerURL, err = url.Parse(rawBrokerURL)
-	if err != nil {
-		log.Fatalf("invalid broker url: %s", err)
+
+	if !useWebSocket {
+		brokerURL, err = url.Parse(rawBrokerURL)
+		if err != nil {
+			log.Fatalf("invalid broker url: %s", err)
+		}
+		_, err = url.Parse(stunURL)
+		if err != nil {
+			log.Fatalf("invalid stun url: %s", err)
+		}
+		_, err = url.Parse(relayURL)
+		if err != nil {
+			log.Fatalf("invalid relay url: %s", err)
+		}
+
+		config = webrtc.NewConfiguration(webrtc.OptionIceServer(stunURL))
+		tokens = make(chan bool, capacity)
+		for i := uint(0); i < capacity; i++ {
+			tokens <- true
+		}
+
+		for {
+			getToken()
+			sessionID := genSessionID()
+			runSession(sessionID)
+		}
+	} else {
+		webSocketBrokerURL, err := url.Parse(rawWebSocketURL)
+
+		if err != nil {
+			log.Fatalf("invalid websocket broker url: %s", err)
+		}
+
+		// Create the state directory, if it doesn't already exist.
+		if _, err := os.Stat(stateDir); os.IsNotExist(err) {
+			log.Printf("Creating state directory: %s", stateDir)
+			os.Mkdir(stateDir, 0700)
+
+		}
+
+		// Load the identity key if it exists, otherwise generate it.
+		identity_key_path := path.Join(stateDir, "identity_secret_key.pem")
+
+		if _, err := os.Stat(identity_key_path); os.IsNotExist(err) {
+			secretKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+
+			secretKeyDER, err := x509.MarshalECPrivateKey(secretKey)
+
+			if err != nil {
+				log.Fatalf("Unable to serialize secret key: %s", err)
+			}
+
+			secretKeyData := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: secretKeyDER})
+
+			err = ioutil.WriteFile(identity_key_path, secretKeyData, 0400)
+
+			if err != nil {
+				log.Fatalf("Unable to save identity key: %s", err)
+			}
+		}
+
+		secretKeyData, err := ioutil.ReadFile(identity_key_path)
+
+		if err != nil {
+			log.Fatalf("Unable to read identity key: %s", err)
+		}
+
+		secretKeyBlock, _ := pem.Decode(secretKeyData)
+
+		secretKey, err := x509.ParseECPrivateKey(secretKeyBlock.Bytes)
+
+		if err != nil {
+			log.Fatalf("Unable to parse EC identity key: %s", err)
+		}
+
+		publicKey := &secretKey.PublicKey
+
+		// Display the ID Public Key's fingerprint.
+		publicKeyData, err := x509.MarshalPKIXPublicKey(publicKey)
+
+		if err != nil {
+			log.Fatalf("Unable to marshal public key: %s", err)
+		}
+
+		h := sha256.New()
+		h.Write(publicKeyData)
+		fingerprint := hex.EncodeToString(h.Sum(nil))
+
+		log.Printf("Proxy identity key loaded: %s", fingerprint)
+
+		// Begin main loop.
+		for {
+			dialBroker(webSocketBrokerURL)
+			time.Sleep(reconnectSleepDuration)
+		}
 	}
-	_, err = url.Parse(stunURL)
+}
+
+func dialBroker(webSocketBrokerURL *url.URL) {
+	log.Printf("Connecting to Broker via %s", webSocketBrokerURL)
+	connection, err := DialBroker(webSocketBrokerURL, proxyPlatform, proxyVersion)
+
 	if err != nil {
-		log.Fatalf("invalid stun url: %s", err)
-	}
-	_, err = url.Parse(relayURL)
-	if err != nil {
-		log.Fatalf("invalid relay url: %s", err)
+		log.Printf("Unable to connect to broker: %s", err)
+		return
 	}
 
-	config = webrtc.NewConfiguration(webrtc.OptionIceServer(stunURL))
-	tokens = make(chan bool, capacity)
-	for i := uint(0); i < capacity; i++ {
-		tokens <- true
-	}
-
-	for {
-		getToken()
-		sessionID := genSessionID()
-		runSession(sessionID)
-	}
+	connection.Handle()
 }
