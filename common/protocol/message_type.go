@@ -3,11 +3,12 @@ package protocol
 type MessageType int
 
 const (
-	ProxyHelloMessageType = iota
+	ProxyHelloMessageType MessageType = iota
 	BrokerHelloMessageType
 	ClientOfferMessageType
 	ClientOfferAcceptMessageType
 	ProxyReadyMessageType
+	ProxyAuthenticateMessageType
 	UnknownMessageType
 )
 
@@ -23,6 +24,8 @@ func (message_type MessageType) String() string {
 		return "Client Offer Accept"
 	case ProxyReadyMessageType:
 		return "Proxy Ready"
+	case ProxyAuthenticateMessageType:
+		return "Proxy Authenticate"
 	case UnknownMessageType:
 		return "Unknown"
 	}

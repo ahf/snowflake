@@ -36,6 +36,8 @@ func Decode(data []byte) (Message, error) {
 		return decodeClientOfferAcceptMessage(message.Data)
 	case "proxy_ready":
 		return decodeProxyReadyMessage(message.Data)
+	case "proxy_authenticate":
+		return decodeProxyAuthenticateMessage(message.Data)
 	}
 
 	return nil, errors.New("Unknown message")

@@ -515,15 +515,15 @@ func main() {
 
 		// Begin main loop.
 		for {
-			dialBroker(webSocketBrokerURL)
+			dialBroker(webSocketBrokerURL, secretKey)
 			time.Sleep(reconnectSleepDuration)
 		}
 	}
 }
 
-func dialBroker(webSocketBrokerURL *url.URL) {
+func dialBroker(webSocketBrokerURL *url.URL, secretKey *ecdsa.PrivateKey) {
 	log.Printf("Connecting to Broker via %s", webSocketBrokerURL)
-	connection, err := DialBroker(webSocketBrokerURL, proxyPlatform, proxyVersion)
+	connection, err := DialBroker(webSocketBrokerURL, proxyPlatform, proxyVersion, secretKey)
 
 	if err != nil {
 		log.Printf("Unable to connect to broker: %s", err)

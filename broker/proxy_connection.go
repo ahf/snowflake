@@ -1,13 +1,25 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/asn1"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"log"
+	"math/big"
 
 	"git.torproject.org/pluggable-transports/snowflake.git/common/protocol"
 
 	"github.com/gorilla/websocket"
 )
+
+// Should be kept in sync with Go's ecdsa.go? Wat.
+type ecdsaSignature struct {
+	R, S *big.Int
+}
 
 type ProxyConnection struct {
 	index          uint
@@ -18,6 +30,7 @@ type ProxyConnection struct {
 	received_hello bool
 	nonce          *string
 	ready          bool
+	publicKey      *ecdsa.PublicKey
 }
 
 func NewProxyConnection(connection *websocket.Conn) *ProxyConnection {
@@ -28,6 +41,7 @@ func NewProxyConnection(connection *websocket.Conn) *ProxyConnection {
 		received_hello: false,
 		nonce:          nil,
 		ready:          false,
+		publicKey:      nil,
 	}
 
 	go proxy_connection.handle_messages()
@@ -138,6 +152,67 @@ func (connection *ProxyConnection) Handle(ctx *BrokerContext) error {
 		case protocol.ProxyReadyMessageType:
 			if !connection.received_hello {
 				return errors.New("Protocol violation: Proxy marked itself ready before hello message.")
+			}
+
+		case protocol.ProxyAuthenticateMessageType:
+			if !connection.received_hello {
+				return errors.New("Protocol violation: Proxy wanted to authenticate before hello message.")
+			}
+
+			if connection.nonce == nil {
+				// FIXME(ahf): Should never happen, but the nonce code could be prettier.
+				return errors.New("Protocol violation: Strange, we do not seem to have a nonce?")
+			}
+
+			// Extract identity public key.
+			identityKeyEncoded := message.(*protocol.ProxyAuthenticateMessage).IdentityKey()
+			identityKeyDER, err := base64.StdEncoding.DecodeString(identityKeyEncoded)
+
+			if err != nil {
+				return err
+			}
+
+			identityKey, err := x509.ParsePKIXPublicKey(identityKeyDER)
+
+			if err != nil {
+				return err
+			}
+
+			// Extract signature.
+			signatureEncoded := message.(*protocol.ProxyAuthenticateMessage).Signature()
+			signatureDER, err := base64.StdEncoding.DecodeString(signatureEncoded)
+
+			if err != nil {
+				return nil
+			}
+
+			signature := &ecdsaSignature{}
+
+			_, err = asn1.Unmarshal(signatureDER, signature)
+
+			if err != nil {
+				return err
+			}
+
+			// Hash our nonce.
+			nonceHash := sha256.New()
+			nonceHash.Write([]byte(*connection.nonce))
+			nonceHashSum := nonceHash.Sum(nil)
+
+			// Check out signature.
+			valid := ecdsa.Verify(identityKey.(*ecdsa.PublicKey), nonceHashSum, signature.R, signature.S)
+
+			if valid {
+				h := sha256.New()
+				h.Write(identityKeyDER)
+				fingerprint := hex.EncodeToString(h.Sum(nil))
+
+				log.Printf("Proxy %s have successfully authenticated", fingerprint)
+
+				connection.publicKey = identityKey.(*ecdsa.PublicKey)
+			} else {
+				log.Printf("Proxy failed to authenticated")
+				return errors.New("Proxy authentication failed")
 			}
 		}
 	}

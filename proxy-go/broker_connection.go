@@ -1,6 +1,11 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"log"
 	"net/url"
@@ -12,12 +17,12 @@ import (
 
 type BrokerConnection struct {
 	connection     *websocket.Conn
-	nonce          string
 	received_hello bool
 	messages       chan protocol.Message
+	secretKey      *ecdsa.PrivateKey
 }
 
-func DialBroker(url *url.URL, platform, version string) (*BrokerConnection, error) {
+func DialBroker(url *url.URL, platform, version string, secretKey *ecdsa.PrivateKey) (*BrokerConnection, error) {
 	connection, _, err := websocket.DefaultDialer.Dial(url.String(), nil)
 
 	if err != nil {
@@ -28,9 +33,9 @@ func DialBroker(url *url.URL, platform, version string) (*BrokerConnection, erro
 
 	broker_connection := &BrokerConnection{
 		connection:     connection,
-		nonce:          "",
 		received_hello: false,
 		messages:       make(chan protocol.Message),
+		secretKey:      secretKey,
 	}
 
 	// Send the Proxy Hello message.
@@ -86,7 +91,33 @@ func (conn *BrokerConnection) HandleMessage(message protocol.Message) error {
 		}
 
 		conn.received_hello = true
-		conn.nonce = message.(*protocol.BrokerHelloMessage).Nonce()
+
+		// Sign the nonce with our secretKey and authenticate.
+		nonce := message.(*protocol.BrokerHelloMessage).Nonce()
+
+		nonceHash := sha256.New()
+		nonceHash.Write([]byte(nonce))
+		nonceHashSum := nonceHash.Sum(nil)
+
+		signature, err := conn.secretKey.Sign(rand.Reader, nonceHashSum, nil)
+
+		if err != nil {
+			log.Printf("Unable to generate signature and authenticate: %s", err)
+			return err
+		}
+
+		publicKey, err := x509.MarshalPKIXPublicKey(conn.secretKey.Public())
+
+		if err != nil {
+			log.Printf("Unable to encode public key: %s", err)
+			return err
+		}
+
+		publicKeyEncoded := base64.StdEncoding.EncodeToString(publicKey)
+		signatureEncoded := base64.StdEncoding.EncodeToString(signature)
+
+		conn.WriteMessage(protocol.NewProxyAuthenticateMessage(publicKeyEncoded, signatureEncoded))
+
 	}
 
 	return nil
