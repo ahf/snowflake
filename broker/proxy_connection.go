@@ -25,6 +25,7 @@ type ProxyConnection struct {
 	index          uint
 	connection     *websocket.Conn
 	platform       string
+	protocol       string
 	version        string
 	messages       chan protocol.Message
 	received_hello bool
@@ -133,8 +134,9 @@ func (connection *ProxyConnection) Handle(ctx *BrokerContext) error {
 			connection.received_hello = true
 			connection.platform = message.(*protocol.ProxyHelloMessage).Platform()
 			connection.version = message.(*protocol.ProxyHelloMessage).Version()
+			connection.protocol = message.(*protocol.ProxyHelloMessage).Protocol()
 
-			log.Printf("Platform: %s (%s)", connection.platform, connection.version)
+			log.Printf("Platform: %s (%s) using protocol v%s", connection.platform, connection.version, connection.protocol)
 
 			// Used to authenticate proxies.
 			broker_hello := protocol.NewDefaultBrokerHelloMessage()

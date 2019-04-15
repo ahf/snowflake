@@ -6,17 +6,20 @@ import (
 )
 
 type proxyHelloMessageJSON struct {
+	Protocol string `json:"protocol"`
 	Platform string `json:"platform"`
 	Version  string `json:"version"`
 }
 
 type ProxyHelloMessage struct {
+	protocol string
 	platform string
 	version  string
 }
 
-func NewProxyHelloMessage(platform, version string) *ProxyHelloMessage {
+func NewProxyHelloMessage(protocol, platform, version string) *ProxyHelloMessage {
 	return &ProxyHelloMessage{
+		protocol: protocol,
 		platform: platform,
 		version:  version,
 	}
@@ -24,6 +27,7 @@ func NewProxyHelloMessage(platform, version string) *ProxyHelloMessage {
 
 func (message ProxyHelloMessage) Encode() ([]byte, error) {
 	body, err := json.Marshal(&proxyHelloMessageJSON{
+		Protocol: message.Protocol(),
 		Platform: message.Platform(),
 		Version:  message.Version(),
 	})
@@ -40,6 +44,10 @@ func (message ProxyHelloMessage) Encode() ([]byte, error) {
 
 func (ProxyHelloMessage) Type() MessageType {
 	return ProxyHelloMessageType
+}
+
+func (message *ProxyHelloMessage) Protocol() string {
+	return message.protocol
 }
 
 func (message *ProxyHelloMessage) Platform() string {
@@ -59,5 +67,5 @@ func decodeProxyHelloMessage(data json.RawMessage) (*ProxyHelloMessage, error) {
 		return nil, err
 	}
 
-	return NewProxyHelloMessage(message.Platform, message.Version), nil
+	return NewProxyHelloMessage(message.Protocol, message.Platform, message.Version), nil
 }

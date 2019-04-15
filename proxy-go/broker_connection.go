@@ -39,7 +39,7 @@ func DialBroker(url *url.URL, platform, version string, secretKey *ecdsa.Private
 	}
 
 	// Send the Proxy Hello message.
-	broker_connection.WriteMessage(protocol.NewProxyHelloMessage(platform, version))
+	broker_connection.WriteMessage(protocol.NewProxyHelloMessage(protocol.ProtocolVersion, platform, version))
 
 	// Spawn reader Goroutine.
 	go broker_connection.handle_messages()
@@ -91,6 +91,13 @@ func (conn *BrokerConnection) HandleMessage(message protocol.Message) error {
 		}
 
 		conn.received_hello = true
+
+		// Check if they speak our protocol?
+		broker_protocol := message.(*protocol.BrokerHelloMessage).Protocol()
+
+		if broker_protocol != protocol.ProtocolVersion {
+			return errors.New("Protocol violation: Unknown protocol from broker.")
+		}
 
 		// Sign the nonce with our secretKey and authenticate.
 		nonce := message.(*protocol.BrokerHelloMessage).Nonce()

@@ -9,18 +9,23 @@ import (
 	"time"
 )
 
+const ProtocolVersion = "1"
+
 type brokerHelloMessageJSON struct {
+	Protocol  string `json:"protocol"`
 	Timestamp string `json:"timestamp"`
 	Nonce     string `json:"nonce"`
 }
 
 type BrokerHelloMessage struct {
+	protocol  string
 	timestamp string
 	nonce     string
 }
 
-func NewBrokerHelloMessage(timestamp, nonce string) *BrokerHelloMessage {
+func NewBrokerHelloMessage(protocol, timestamp, nonce string) *BrokerHelloMessage {
 	return &BrokerHelloMessage{
+		protocol:  protocol,
 		timestamp: timestamp,
 		nonce:     nonce,
 	}
@@ -29,11 +34,12 @@ func NewBrokerHelloMessage(timestamp, nonce string) *BrokerHelloMessage {
 func NewDefaultBrokerHelloMessage() *BrokerHelloMessage {
 	timestamp := time.Now().Format(time.RFC3339)
 	nonce := newNonce()
-	return NewBrokerHelloMessage(timestamp, nonce)
+	return NewBrokerHelloMessage(ProtocolVersion, timestamp, nonce)
 }
 
 func (message BrokerHelloMessage) Encode() ([]byte, error) {
 	body, err := json.Marshal(&brokerHelloMessageJSON{
+		Protocol:  message.Protocol(),
 		Timestamp: message.Timestamp(),
 		Nonce:     message.Nonce(),
 	})
@@ -50,6 +56,10 @@ func (message BrokerHelloMessage) Encode() ([]byte, error) {
 
 func (BrokerHelloMessage) Type() MessageType {
 	return BrokerHelloMessageType
+}
+
+func (message *BrokerHelloMessage) Protocol() string {
+	return message.protocol
 }
 
 func (message *BrokerHelloMessage) Timestamp() string {
@@ -69,7 +79,7 @@ func decodeBrokerHelloMessage(data json.RawMessage) (*BrokerHelloMessage, error)
 		return nil, err
 	}
 
-	return NewBrokerHelloMessage(message.Timestamp, message.Nonce), nil
+	return NewBrokerHelloMessage(message.Protocol, message.Timestamp, message.Nonce), nil
 }
 
 func newNonce() string {
